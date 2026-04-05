@@ -1,0 +1,39 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "AI Gateway Brain (LMStudio)",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "src.gateway.main"],
+      "port": 8080,
+      "env": {
+        "AIGW_OPENAI_BASE_URL": "http://localhost:1234/v1",
+        "AIGW_OPENAI_API_KEY": "lm-studio"
+      }
+    },
+    {
+      "name": "AI Gateway Brain (OpenAI)",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "src.gateway.main"],
+      "port": 8080,
+      "env": {
+        "AIGW_DEFAULT_ADAPTER": "openai"
+      }
+    },
+    {
+      "name": "AI Gateway Brain (Ollama)",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "src.gateway.main"],
+      "port": 8080,
+      "env": {
+        "AIGW_DEFAULT_ADAPTER": "ollama",
+        "AIGW_OLLAMA_BASE_URL": "http://localhost:11434"
+      }
+    },
+    {
+      "name": "Test Suite",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "pytest", "tests/", "-v"]
+    }
+  ]
+}
