@@ -10,7 +10,7 @@ import re
 
 from src.core.models import Choice, Message, PipelineResponse, Role
 from src.core.state import PipelineState
-from src.middleware.base import MiddlewareBase
+from src.middleware.base import PreMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ _MATH_PATTERN = re.compile(
 )
 
 
-class EarlyExitMiddleware(MiddlewareBase):
+class EarlyExitMiddleware(PreMiddleware):
     """Pre-processing middleware that handles trivial queries locally."""
 
     name = "early_exit"

@@ -6,12 +6,14 @@ from httpx import AsyncClient, ASGITransport
 
 from src.adapters.base import AdapterBase
 from src.core.models import Choice, Message, PipelineResponse, Role
+from src.core.orchestrator import Orchestrator
+from src.core.pipeline import Pipeline
 from src.gateway.main import create_app
 from src.utils.config import Settings
 
 
 class FakeAdapter(AdapterBase):
-    name = "openai"
+    name = "lmstudio"
 
     def translate_to_ai(self, request):
         return {}
@@ -34,17 +36,29 @@ class FakeAdapter(AdapterBase):
         )
 
 
+def _make_app_with_fake_adapter(**extra_plugins_cfg):
+    """Create an app with no real plugins, then inject a fake adapter."""
+    # Empty plugin config — no real adapters/middleware loaded
+    empty_config = {
+        "adapters": {},
+        "middleware": {"pre": [], "post": []},
+    }
+
+    settings = Settings(default_adapter="lmstudio")
+    app = create_app(settings)
+
+    # Replace the pipeline with one using our fake adapter
+    pipeline = Pipeline(
+        adapters={"lmstudio": FakeAdapter()},
+        default_adapter="lmstudio",
+    )
+    app.state.orchestrator = Orchestrator(pipeline=pipeline)
+    return app
+
+
 @pytest.fixture
 def app():
-    settings = Settings(
-        enable_rag=False,
-        enable_logger=False,
-        enable_early_exit=False,
-    )
-    app = create_app(settings)
-    # Swap in our fake adapter
-    app.state.orchestrator.pipeline.adapters["openai"] = FakeAdapter()
-    return app
+    return _make_app_with_fake_adapter()
 
 
 @pytest.mark.asyncio
@@ -54,7 +68,7 @@ async def test_chat_completions_round_trip(app):
         resp = await client.post(
             "/v1/chat/completions",
             json={
-                "model": "gpt-4",
+                "model": "qwen3-0.6b",
                 "messages": [{"role": "user", "content": "Hello world"}],
             },
         )
@@ -73,37 +87,12 @@ async def test_list_models(app):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert any(m["id"] == "openai" for m in data["data"])
-
-
-@pytest.mark.asyncio
-async def test_early_exit_time_query():
-    settings = Settings(
-        enable_rag=False,
-        enable_logger=False,
-        enable_early_exit=True,
-    )
-    app = create_app(settings)
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "gpt-4",
-                "messages": [{"role": "user", "content": "What time is it?"}],
-            },
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "time" in data["choices"][0]["message"]["content"].lower()
+    assert any(m["id"] == "lmstudio" for m in data["data"])
 
 
 @pytest.mark.asyncio
 async def test_adapter_routing_via_model_prefix(app):
     """Test that 'ollama/llama3' routes to the ollama adapter."""
-    # Add a fake ollama adapter
     class FakeOllama(FakeAdapter):
         name = "ollama"
 

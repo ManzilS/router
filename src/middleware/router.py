@@ -10,12 +10,12 @@ from __future__ import annotations
 import logging
 
 from src.core.state import PipelineState
-from src.middleware.base import MiddlewareBase
+from src.middleware.base import PreMiddleware
 
 logger = logging.getLogger(__name__)
 
 
-class RouterMiddleware(MiddlewareBase):
+class RouterMiddleware(PreMiddleware):
     """Pre-processing middleware that sets up fan-out targets."""
 
     name = "router"

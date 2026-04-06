@@ -1,5 +1,9 @@
-"""Application entry point — wires up adapters, middleware, pipeline,
-orchestrator, and starts the FastAPI server."""
+"""Application entry point — uses the plugin registry to wire up
+adapters, middleware, pipeline, orchestrator, and the FastAPI server.
+
+No concrete adapter or middleware classes are imported here.
+Everything is discovered from plugins.yaml.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +13,9 @@ import sys
 import uvicorn
 from fastapi import FastAPI
 
-from src.adapters.gemini_ext import GeminiAdapter
-from src.adapters.ollama_ext import OllamaAdapter
-from src.adapters.openai_ext import OpenAIAdapter
 from src.core.orchestrator import Orchestrator
 from src.core.pipeline import Pipeline
-from src.middleware.early_exit import EarlyExitMiddleware
-from src.middleware.fallback import FallbackMiddleware
-from src.middleware.logger import LoggerMiddleware
-from src.middleware.rag_injector import RAGInjectorMiddleware
-from src.middleware.router import RouterMiddleware
+from src.core.registry import PluginRegistry, load_plugins_config
 from src.utils.config import Settings
 
 
@@ -32,65 +29,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         stream=sys.stdout,
     )
 
-    # --- Adapters ---
-    adapters = {
-        "openai": OpenAIAdapter(
-            base_url=settings.openai_base_url,
-            api_key=settings.openai_api_key,
-        ),
-        "ollama": OllamaAdapter(base_url=settings.ollama_base_url),
-        "gemini": GeminiAdapter(
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-        ),
-    }
+    # --- Discover plugins ---
+    plugins_config = load_plugins_config(settings.plugins_config)
+    registry = PluginRegistry(config=plugins_config)
+    registry.discover()
 
-    # --- Middleware ---
-    pre_middleware = []
-    post_middleware = []
-
-    if settings.enable_early_exit:
-        pre_middleware.append(EarlyExitMiddleware())
-
-    pre_middleware.append(RouterMiddleware())
-
-    # Fallback: if enabled, try adapters in order before giving up
-    if settings.fallback_chain:
-        pre_middleware.append(
-            FallbackMiddleware(
-                chain=settings.fallback_chain,
-                failure_threshold=settings.fallback_failure_threshold,
-                recovery_timeout=settings.fallback_recovery_timeout,
-            )
+    if not registry.adapters:
+        logging.warning(
+            "No adapters enabled! Check plugins.yaml. "
+            "Requests will fail until at least one adapter is enabled."
         )
-
-    if settings.enable_rag:
-        rag = RAGInjectorMiddleware(persist_dir=settings.chroma_path)
-        pre_middleware.append(rag)
-        post_middleware.append(rag)  # also runs post to ingest
-
-    if settings.enable_logger:
-        post_middleware.append(LoggerMiddleware(db_path=settings.db_path))
 
     # --- Pipeline & Orchestrator ---
     pipeline = Pipeline(
-        pre_middleware=pre_middleware,
-        post_middleware=post_middleware,
-        adapters=adapters,
+        pre_middleware=registry.pre_middleware,
+        post_middleware=registry.post_middleware,
+        adapters=registry.adapters,
         default_adapter=settings.default_adapter,
     )
     orchestrator = Orchestrator(pipeline=pipeline, max_loops=settings.max_loops)
 
     # --- FastAPI app ---
     app = FastAPI(
-        title="AI Gateway Brain",
-        description="Central nervous system for all your AI interactions",
-        version="0.1.0",
+        title="AI Router",
+        description="Modular AI routing engine with pluggable adapters and middleware",
+        version="0.2.0",
     )
 
-    # Store orchestrator on app state so routes can access it
+    # Store on app state so routes can access it
     app.state.orchestrator = orchestrator
     app.state.settings = settings
+    app.state.registry = registry
 
     from src.gateway.server import router
     app.include_router(router)

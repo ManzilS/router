@@ -7,13 +7,15 @@ from httpx import AsyncClient, ASGITransport
 
 from src.adapters.base import AdapterBase
 from src.core.models import Choice, Message, PipelineResponse, Role
-from src.gateway.main import create_app
+from src.core.orchestrator import Orchestrator
+from src.core.pipeline import Pipeline
+from src.middleware.early_exit import EarlyExitMiddleware
 from src.utils.config import Settings
 
 
 class FakeStreamingAdapter(AdapterBase):
     """Adapter that yields 3 SSE chunks then [DONE]."""
-    name = "openai"
+    name = "lmstudio"
     supports_streaming = True
 
     def translate_to_ai(self, request):
@@ -53,16 +55,28 @@ class FakeStreamingAdapter(AdapterBase):
         yield "data: [DONE]\n\n"
 
 
+def _make_app(pre_middleware=None):
+    """Build a minimal app with the fake streaming adapter."""
+    from fastapi import FastAPI
+    from src.gateway.server import router
+
+    pipeline = Pipeline(
+        pre_middleware=pre_middleware or [],
+        adapters={"lmstudio": FakeStreamingAdapter()},
+        default_adapter="lmstudio",
+    )
+    orch = Orchestrator(pipeline=pipeline)
+
+    app = FastAPI()
+    app.state.orchestrator = orch
+    app.state.settings = Settings(default_adapter="lmstudio")
+    app.include_router(router)
+    return app
+
+
 @pytest.fixture
 def app():
-    settings = Settings(
-        enable_rag=False,
-        enable_logger=False,
-        enable_early_exit=False,
-    )
-    app = create_app(settings)
-    app.state.orchestrator.pipeline.adapters["openai"] = FakeStreamingAdapter()
-    return app
+    return _make_app()
 
 
 @pytest.mark.asyncio
@@ -72,7 +86,7 @@ async def test_streaming_returns_sse_chunks(app):
         resp = await client.post(
             "/v1/chat/completions",
             json={
-                "model": "gpt-4",
+                "model": "qwen3-0.6b",
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
@@ -81,11 +95,9 @@ async def test_streaming_returns_sse_chunks(app):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
-    # Parse out the SSE lines
     lines = [l for l in resp.text.split("\n") if l.startswith("data:")]
     assert len(lines) == 4  # 3 content chunks + [DONE]
 
-    # Verify content accumulates
     full_text = ""
     for line in lines:
         payload = line[len("data:"):].strip()
@@ -99,19 +111,14 @@ async def test_streaming_returns_sse_chunks(app):
 @pytest.mark.asyncio
 async def test_streaming_early_exit():
     """Early exit queries should still work under stream=true."""
-    settings = Settings(
-        enable_rag=False,
-        enable_logger=False,
-        enable_early_exit=True,
-    )
-    app = create_app(settings)
+    app = _make_app(pre_middleware=[EarlyExitMiddleware()])
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/v1/chat/completions",
             json={
-                "model": "gpt-4",
+                "model": "qwen3-0.6b",
                 "messages": [{"role": "user", "content": "ping"}],
                 "stream": True,
             },
@@ -121,9 +128,7 @@ async def test_streaming_early_exit():
     assert resp.headers["content-type"].startswith("text/event-stream")
 
     lines = [l for l in resp.text.split("\n") if l.startswith("data:")]
-    # Should have content chunk + [DONE]
     assert any("[DONE]" in l for l in lines)
-    # The content should be the early exit response
     content_line = lines[0]
     obj = json.loads(content_line[len("data:"):].strip())
     assert "pong" in obj["choices"][0]["delta"]["content"].lower()
@@ -137,7 +142,7 @@ async def test_nonstreaming_still_works(app):
         resp = await client.post(
             "/v1/chat/completions",
             json={
-                "model": "gpt-4",
+                "model": "qwen3-0.6b",
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": False,
             },

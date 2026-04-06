@@ -1,97 +1,137 @@
-# AI Gateway Brain
+# AI Router
 
-A central "nervous system" for all your AI interactions. Acts as a local proxy that any OpenAI-compatible client can connect to, routing requests through a configurable pipeline of middleware (RAG injection, logging, early exits, fan-out routing) before dispatching to any backend AI (OpenAI, Ollama, Gemini).
+A modular AI routing engine. Drop-in adapters and middleware, declarative config via `plugins.yaml`, OpenAI-compatible API surface.
 
-## Architecture
-
-```
-Client (LMStudio, ChatGPT, etc.)
-    |
-    v
-+-----------------------------+
-|  Gateway (FastAPI)          |  localhost:8080/v1/chat/completions
-|  OpenAI-compatible API      |
-+----------+------------------+
-           |
-           v
-+-----------------------------+
-|  Pre-Middleware Pipeline    |
-|  +- Early Exit (time/math)  |
-|  +- Router (fan-out)        |
-|  +- RAG Injector (context)  |
-+----------+------------------+
-           |
-           v
-+-----------------------------+
-|  Adapter (format translator)|
-|  openai | ollama | gemini   |
-+----------+------------------+
-           |
-           v
-+-----------------------------+
-|  Post-Middleware Pipeline   |
-|  +- RAG Injector (ingest)   |
-|  +- Logger (SQLite)         |
-+-----------------------------+
-           |
-           v
-+-----------------------------+
-|  Orchestrator (loop ctrl)   |
-|  Handles tool-call loops    |
-|  up to max_loops iterations |
-+-----------------------------+
-```
+Built as a foundation — use it standalone as a router, or extend it for larger projects (RAG brain, response evaluator, agent orchestration, etc.).
 
 ## Quick Start
 
 ```bash
-# Clone and setup
 uv sync
-
-# Configure
-cp .env.example .env
-# Edit .env with your API keys
-
-# Run
 uv run python -m src.gateway.main
 ```
 
-The server starts at `http://localhost:8080`. Point any OpenAI-compatible client to this URL as the base URL.
+Server starts at `http://localhost:8080`. Point any OpenAI-compatible client to this URL.
+
+LMStudio adapter is **on by default** (localhost:1234). Just have LMStudio running.
+
+## Architecture
+
+```
+Client (LMStudio, Chatbox, any OpenAI client)
+    |
+    v
++-------------------------------+
+|  Gateway (FastAPI)            |  localhost:8080/v1/chat/completions
+|  OpenAI-compatible API        |
++-------------------------------+
+    |
+    v
++-------------------------------+
+|  Plugin Registry              |  reads plugins.yaml
+|  Auto-discovers adapters      |
+|  and middleware at startup     |
++-------------------------------+
+    |
+    v
++-------------------------------+
+|  Pre-Middleware Pipeline      |  (configurable, ordered)
+|  e.g. early_exit, router      |
++-------------------------------+
+    |
+    v
++-------------------------------+
+|  Adapter                      |  lmstudio | openai | ollama | gemini
+|  Translates Universal Format  |
+|  to/from AI-specific format   |
++-------------------------------+
+    |
+    v
++-------------------------------+
+|  Post-Middleware Pipeline     |  (configurable, ordered)
+|  e.g. logger                  |
++-------------------------------+
+    |
+    v
++-------------------------------+
+|  Orchestrator                 |  tool-call loops, fan-out
++-------------------------------+
+```
+
+## plugins.yaml
+
+All adapters and middleware are controlled declaratively:
+
+```yaml
+adapters:
+  lmstudio:
+    enabled: true
+    module: src.adapters.lmstudio_ext
+    settings:
+      base_url: "http://localhost:1234/v1"
+
+  openai:
+    enabled: false
+    module: src.adapters.openai_ext
+    settings:
+      api_key: "sk-..."
+
+middleware:
+  pre:
+    - name: early_exit
+      enabled: false
+      module: src.middleware.early_exit
+  post:
+    - name: logger
+      enabled: false
+      module: src.middleware.logger
+```
+
+Enable a plugin by setting `enabled: true`. That's it.
 
 ## Adapter Routing
 
-Specify which backend to use via the model name:
+Use the model name to target specific adapters:
 
 | Model string | Adapter | Example |
 |---|---|---|
-| `gpt-4` | openai (default) | Standard OpenAI |
-| `ollama/llama3` | ollama | Local Ollama model |
+| `qwen3-0.6b` | lmstudio (default) | Any LMStudio model |
+| `openai/gpt-4` | openai | Remote OpenAI API |
+| `ollama/llama3` | ollama | Local Ollama |
 | `gemini/gemini-2.0-flash` | gemini | Google Gemini |
 
-## Middleware
+## Adding Your Own Adapter
 
-| Middleware | Phase | Description |
-|---|---|---|
-| **Early Exit** | Pre | Handles trivial queries (time, date, math, ping) locally |
-| **Router** | Pre | Fan-out to multiple adapters simultaneously |
-| **RAG Injector** | Pre + Post | Injects relevant past context; ingests new conversations |
-| **Logger** | Post | Writes all traffic to SQLite for history |
+1. Copy `src/adapters/_template.py` to `src/adapters/myai_ext.py`
+2. Implement `translate_to_ai()`, `translate_to_universal()`, `send()`
+3. Add to `plugins.yaml`:
+   ```yaml
+   adapters:
+     myai:
+       enabled: true
+       module: src.adapters.myai_ext
+       settings:
+         api_key: "..."
+   ```
 
-## Configuration
+## Adding Your Own Middleware
 
-All settings via environment variables (prefix `AIGW_`) or `.env` file:
+1. Copy `src/middleware/_template.py` to `src/middleware/myfeature.py`
+2. Subclass `PreMiddleware` or `PostMiddleware`
+3. Implement `process()`
+4. Add to `plugins.yaml` under `pre:` or `post:`
 
-| Variable | Default | Description |
-|---|---|---|
-| `AIGW_PORT` | 8080 | Server port |
-| `AIGW_DEFAULT_ADAPTER` | openai | Default backend |
-| `AIGW_MAX_LOOPS` | 3 | Max orchestrator loops |
-| `AIGW_OPENAI_API_KEY` | | Your OpenAI key |
-| `AIGW_OLLAMA_BASE_URL` | http://localhost:11434 | Ollama endpoint |
-| `AIGW_GEMINI_API_KEY` | | Your Gemini key |
-| `AIGW_ENABLE_RAG` | true | Toggle RAG injection |
-| `AIGW_ENABLE_EARLY_EXIT` | true | Toggle early exits |
-| `AIGW_ENABLE_LOGGER` | true | Toggle conversation logging |
+## Included Example Plugins
+
+| Plugin | Type | Description | Default |
+|---|---|---|---|
+| **lmstudio** | Adapter | Local LMStudio (OpenAI-compatible) | ON |
+| **openai** | Adapter | Remote OpenAI API | off |
+| **ollama** | Adapter | Local Ollama | off |
+| **gemini** | Adapter | Google Gemini | off |
+| **early_exit** | Pre-middleware | Answer time/date/math locally | off |
+| **router** | Pre-middleware | Fan-out to multiple adapters | off |
+| **logger** | Post-middleware | Save conversations to SQLite | off |
 
 ## Testing
 
@@ -102,18 +142,6 @@ uv run pytest tests/ -v
 ## Docker
 
 ```bash
-docker build -t ai-gateway-brain .
-docker run -p 8080:8080 --env-file .env ai-gateway-brain
+docker build -t ai-router .
+docker run -p 8080:8080 ai-router
 ```
-
-## Adding a New Adapter
-
-1. Create `src/adapters/myai_ext.py`
-2. Subclass `AdapterBase` and implement `translate_to_ai()`, `translate_to_universal()`, and `send()`
-3. Register it in `src/gateway/main.py` in the `adapters` dict
-
-## Adding New Middleware
-
-1. Create `src/middleware/myfeature.py`
-2. Subclass `MiddlewareBase` and implement `process()`
-3. Add it to the `pre_middleware` or `post_middleware` list in `src/gateway/main.py`

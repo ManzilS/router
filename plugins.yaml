@@ -1,0 +1,75 @@
+# ============================================================================
+# plugins.yaml — Declarative plugin configuration for the AI Router
+# ============================================================================
+#
+# This file controls which adapters and middleware are active.
+# To enable a plugin, set `enabled: true`.  To configure it, add
+# key-value pairs under `settings:`.
+#
+# Adapters and middleware are loaded in the order listed here.
+# Middleware order matters — pre-middleware runs top-to-bottom before
+# the adapter, post-middleware runs top-to-bottom after.
+#
+# To add your own plugin:
+#   1. Drop a .py file in src/adapters/ or src/middleware/
+#   2. Add an entry below pointing to the module
+#   3. Set enabled: true
+#
+# See src/adapters/_template.py and src/middleware/_template.py for
+# examples of how to write your own.
+# ============================================================================
+
+adapters:
+  # LMStudio — local OpenAI-compatible server (on by default)
+  lmstudio:
+    enabled: true
+    module: src.adapters.lmstudio_ext
+    settings:
+      base_url: "http://localhost:1234/v1"
+      api_key: "lm-studio"
+
+  # OpenAI / any OpenAI-compatible remote API
+  openai:
+    enabled: false
+    module: src.adapters.openai_ext
+    settings:
+      base_url: "https://api.openai.com/v1"
+      api_key: ""  # set via ROUTER_OPENAI_API_KEY or here
+
+  # Ollama — local model runner
+  ollama:
+    enabled: false
+    module: src.adapters.ollama_ext
+    settings:
+      base_url: "http://localhost:11434"
+
+  # Google Gemini
+  gemini:
+    enabled: false
+    module: src.adapters.gemini_ext
+    settings:
+      api_key: ""
+      model: "gemini-2.0-flash"
+
+
+middleware:
+  # --- Pre-middleware (runs before the AI) ---
+  pre:
+    # Early Exit — answers trivial queries locally (time, date, math, ping)
+    - name: early_exit
+      enabled: false
+      module: src.middleware.early_exit
+
+    # Router — fan-out to multiple adapters simultaneously
+    - name: router
+      enabled: false
+      module: src.middleware.router
+
+  # --- Post-middleware (runs after the AI responds) ---
+  post:
+    # Logger — saves all conversations to SQLite
+    - name: logger
+      enabled: false
+      module: src.middleware.logger
+      settings:
+        db_path: "~/.ai-router/history.db"

@@ -10,11 +10,11 @@ from pathlib import Path
 import aiosqlite
 
 from src.core.state import PipelineState
-from src.middleware.base import MiddlewareBase
+from src.middleware.base import PostMiddleware
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path.home() / ".ai-gateway" / "history.db"
+DEFAULT_DB_PATH = Path.home() / ".ai-router" / "history.db"
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS conversation_log (
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS conversation_log (
 """
 
 
-class LoggerMiddleware(MiddlewareBase):
+class LoggerMiddleware(PostMiddleware):
     """Post-processing middleware that writes traffic to SQLite."""
 
     name = "logger"

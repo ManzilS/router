@@ -236,7 +236,7 @@ def _parse_openai_request(body: dict[str, Any]) -> PipelineRequest:
 
     # Allow clients to specify target adapter via model name or header
     model = body.get("model", "default")
-    target = "openai"  # default
+    target = ""  # empty = use pipeline's default_adapter
     if "/" in model:
         # Convention: "ollama/llama3" means use the ollama adapter with model llama3
         parts = model.split("/", 1)

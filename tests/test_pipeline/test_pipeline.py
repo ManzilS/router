@@ -13,7 +13,7 @@ from src.core.models import (
 from src.core.pipeline import Pipeline
 from src.core.state import PipelineState
 from src.adapters.base import AdapterBase
-from src.middleware.base import MiddlewareBase
+from src.middleware.base import PreMiddleware
 
 
 # --- Mock adapter ---
@@ -43,7 +43,7 @@ class MockAdapter(AdapterBase):
 
 
 # --- Mock middleware ---
-class AppendMiddleware(MiddlewareBase):
+class AppendMiddleware(PreMiddleware):
     """Appends a marker to the last user message."""
 
     name = "append"
@@ -60,7 +60,7 @@ class AppendMiddleware(MiddlewareBase):
         return state
 
 
-class EarlyExitMW(MiddlewareBase):
+class EarlyExitMW(PreMiddleware):
     name = "early_exit_test"
 
     async def process(self, state):

@@ -3,9 +3,12 @@ interactions where an AI response triggers further processing.
 
 It wraps the Pipeline and handles:
   1. Fan-out routing (send to multiple adapters simultaneously)
-  2. Fallback routing (try adapters sequentially until one works)
-  3. Tool-call loops (AI asks for a tool -> middleware runs it -> loop back)
-  4. Max-loop safety limits
+  2. Tool-call loops (AI asks for a tool -> middleware runs it -> loop back)
+  3. Max-loop safety limits
+
+The orchestrator is intentionally generic — it doesn't know the names
+of any specific middleware.  All coordination happens through the
+``PipelineState`` object (extras, fan_out_targets, etc.).
 """
 
 from __future__ import annotations
@@ -34,31 +37,28 @@ class Orchestrator:
         state.max_loops = self.max_loops
 
         while True:
-            # Always run pre-middleware first (sets up fallback_chain, etc.)
+            # Run pre-middleware (routing decisions, early exits, etc.)
             state = await self._run_pre_middleware(state)
             if state.early_exit:
                 return state
 
-            # --- Fan-out routing ---
+            # Fan-out or single dispatch
             if state.fan_out_targets:
                 state = await self._fan_out(state)
-            # --- Fallback routing ---
-            elif "fallback_chain" in state.extras:
-                state = await self._fallback(state)
             else:
                 state = await self.pipeline.dispatch(state)
 
             if state.early_exit:
                 return state
 
-            # --- Check if the AI wants to loop (tool calls) ---
+            # Check if the AI wants to loop (tool calls)
             if state.response and state.response.has_tool_calls:
                 state.should_loop = True
 
             if not state.can_loop:
                 break
 
-            # Inject tool results back into the conversation and loop
+            # Inject tool results back and loop
             state = self._prepare_next_loop(state)
             state.increment_loop()
             logger.info(
@@ -69,53 +69,12 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def _run_pre_middleware(self, state: PipelineState) -> PipelineState:
-        """Run pre-middleware only (early exit, fallback setup, etc.)."""
+        """Run all pre-middleware nodes."""
         for mw in self.pipeline.pre_middleware:
             state = await mw.process(state)
             if state.early_exit:
                 return state
         return state
-
-    # ------------------------------------------------------------------
-    async def _fallback(self, state: PipelineState) -> PipelineState:
-        """Try adapters sequentially until one succeeds.
-
-        Uses ``pipeline.dispatch()`` (not ``execute()``) so pre-middleware
-        is NOT re-run on each retry — it already ran once above.
-        """
-        chain: list[str] = state.extras.pop("fallback_chain")
-        idx: int = state.extras.pop("fallback_index", 0)
-
-        # Find the fallback middleware to report success/failure
-        fallback_mw = None
-        for mw in self.pipeline.pre_middleware:
-            if mw.name == "fallback":
-                fallback_mw = mw
-                break
-
-        last_error: Exception | None = None
-        for i in range(idx, len(chain)):
-            adapter_name = chain[i]
-            state.request.target_adapter = adapter_name
-            logger.info("Fallback: trying adapter '%s' (%d/%d)", adapter_name, i + 1, len(chain))
-            try:
-                state = await self.pipeline.dispatch(state)
-                if fallback_mw is not None:
-                    fallback_mw.record_success(adapter_name)
-                return state
-            except Exception as exc:
-                logger.warning("Fallback: adapter '%s' failed: %s", adapter_name, exc)
-                last_error = exc
-                if fallback_mw is not None:
-                    fallback_mw.record_failure(adapter_name)
-                # Reset response for next attempt
-                state.response = None
-                continue
-
-        # All adapters in the chain failed
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Fallback chain exhausted with no adapters")
 
     # ------------------------------------------------------------------
     async def _fan_out(self, state: PipelineState) -> PipelineState:
@@ -126,7 +85,7 @@ class Orchestrator:
         async def _dispatch(adapter_name: str) -> PipelineResponse:
             branch = copy.deepcopy(state)
             branch.request.target_adapter = adapter_name
-            branch = await self.pipeline.execute(branch)
+            branch = await self.pipeline.dispatch(branch)
             return branch.response  # type: ignore[return-value]
 
         results = await asyncio.gather(
