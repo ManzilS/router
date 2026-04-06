@@ -16,6 +16,12 @@ from src.core.models import (
     Role,
     Usage,
 )
+from src.utils.errors import (
+    AdapterAuthError,
+    AdapterError,
+    AdapterRateLimitError,
+    AdapterTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +32,8 @@ _ROLE_MAP = {
     Role.ASSISTANT: "model",
     Role.TOOL: "user",
 }
+
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
 class GeminiAdapter(AdapterBase):
@@ -40,6 +48,25 @@ class GeminiAdapter(AdapterBase):
         self.api_key = api_key
         self.default_model = model
         self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30,
+                ),
+                headers={"X-Goog-Api-Key": self.api_key},
+            )
+        return self._client
+
+    async def close(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     # ------------------------------------------------------------------
     def translate_to_ai(self, request: PipelineRequest) -> dict[str, Any]:
@@ -103,13 +130,32 @@ class GeminiAdapter(AdapterBase):
     # ------------------------------------------------------------------
     async def send(self, request: PipelineRequest) -> PipelineResponse:
         model = request.model if request.model != "default" else self.default_model
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/"
-            f"models/{model}:generateContent?key={self.api_key}"
-        )
+        url = f"{_GEMINI_BASE}/models/{model}:generateContent"
         payload = self.translate_to_ai(request)
+        client = self._get_client()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             return self.translate_to_universal(resp.json())
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeoutError(
+                "Gemini timed out", adapter=self.name
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise AdapterAuthError(
+                    "Gemini authentication failed", adapter=self.name
+                ) from exc
+            if status == 429:
+                raise AdapterRateLimitError(
+                    "Gemini rate limit hit", adapter=self.name
+                ) from exc
+            raise AdapterError(
+                f"Gemini returned {status}", adapter=self.name
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise AdapterError(
+                "Cannot connect to Gemini API", adapter=self.name
+            ) from exc

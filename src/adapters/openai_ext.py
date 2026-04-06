@@ -18,8 +18,31 @@ from src.core.models import (
     Role,
     Usage,
 )
+from src.utils.errors import (
+    AdapterAuthError,
+    AdapterError,
+    AdapterRateLimitError,
+    AdapterTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_http_error(exc: httpx.HTTPStatusError, adapter: str) -> AdapterError:
+    """Map HTTP status codes to typed adapter errors."""
+    status = exc.response.status_code
+    body = exc.response.text[:200]
+    if status in (401, 403):
+        return AdapterAuthError(
+            f"Authentication failed ({status})", adapter=adapter, details=body
+        )
+    if status == 429:
+        return AdapterRateLimitError(
+            "Upstream rate limit hit", adapter=adapter, details=body
+        )
+    return AdapterError(
+        f"Upstream returned {status}", adapter=adapter, details=body
+    )
 
 
 class OpenAIAdapter(AdapterBase):
@@ -35,6 +58,26 @@ class OpenAIAdapter(AdapterBase):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return a persistent async HTTP client (connection pooling)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30,
+                ),
+            )
+        return self._client
+
+    async def close(self) -> None:
+        """Close the persistent HTTP client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     # ------------------------------------------------------------------
     def translate_to_ai(self, request: PipelineRequest) -> dict[str, Any]:
@@ -128,8 +171,9 @@ class OpenAIAdapter(AdapterBase):
         payload = self.translate_to_ai(request)
         # Force non-streaming for the synchronous path
         payload["stream"] = False
+        client = self._get_client()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
                 json=payload,
@@ -137,14 +181,25 @@ class OpenAIAdapter(AdapterBase):
             )
             resp.raise_for_status()
             return self.translate_to_universal(resp.json())
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeoutError(
+                "Upstream timed out", adapter=self.name
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise _classify_http_error(exc, self.name) from exc
+        except httpx.ConnectError as exc:
+            raise AdapterError(
+                f"Cannot connect to {self.base_url}", adapter=self.name
+            ) from exc
 
     # ------------------------------------------------------------------
     async def stream(self, request: PipelineRequest) -> AsyncIterator[str]:
         """Yield raw SSE lines from the upstream OpenAI-compatible API."""
         payload = self.translate_to_ai(request)
         payload["stream"] = True
+        client = self._get_client()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/chat/completions",
@@ -159,3 +214,13 @@ class OpenAIAdapter(AdapterBase):
                             return
                     elif line == "":
                         continue
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeoutError(
+                "Upstream timed out during streaming", adapter=self.name
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise _classify_http_error(exc, self.name) from exc
+        except httpx.ConnectError as exc:
+            raise AdapterError(
+                f"Cannot connect to {self.base_url}", adapter=self.name
+            ) from exc

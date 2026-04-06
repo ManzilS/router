@@ -133,5 +133,7 @@ async def test_missing_adapter_raises(basic_state):
     pipeline = Pipeline(adapters={})
     basic_state.request.target_adapter = "nonexistent"
 
-    with pytest.raises(ValueError, match="No adapter registered"):
+    from src.utils.errors import AdapterNotFoundError
+
+    with pytest.raises(AdapterNotFoundError, match="No adapter registered"):
         await pipeline.execute(basic_state)
