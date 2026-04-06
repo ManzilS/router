@@ -3,9 +3,10 @@ and returns instant local answers."""
 
 from __future__ import annotations
 
+import ast
 import datetime
 import logging
-import platform
+import operator
 import re
 
 from src.core.models import Choice, Message, PipelineResponse, Role
@@ -46,6 +47,52 @@ _MATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Safe AST-based math evaluator — no eval()
+_SAFE_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _safe_math_eval(expr: str) -> float | int | None:
+    """Evaluate a simple arithmetic expression using the AST.
+
+    Only supports numbers and +, -, *, / operators.  Returns None if
+    the expression contains anything unexpected.
+    """
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return None
+
+    def _eval_node(node: ast.expr) -> float | int:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp):
+            op_fn = _SAFE_OPS.get(type(node.op))
+            if op_fn is None:
+                raise ValueError("Unsupported operator")
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            return op_fn(left, right)
+        if isinstance(node, ast.UnaryOp):
+            op_fn = _SAFE_OPS.get(type(node.op))
+            if op_fn is None:
+                raise ValueError("Unsupported operator")
+            return op_fn(_eval_node(node.operand))
+        raise ValueError("Unsupported node")
+
+    try:
+        return _eval_node(tree)
+    except (ValueError, ZeroDivisionError):
+        return None
+
 
 class EarlyExitMiddleware(PreMiddleware):
     """Pre-processing middleware that handles trivial queries locally."""
@@ -81,10 +128,10 @@ class EarlyExitMiddleware(PreMiddleware):
         elif _MATH_PATTERN.match(text):
             expr = _MATH_PATTERN.match(text).group(1).strip()  # type: ignore[union-attr]
             try:
-                # Safe eval: only allow digits and basic math operators
                 if re.fullmatch(r"[\d\s\+\-\*\/\.\(\)]+", expr):
-                    result = eval(expr)  # noqa: S307 — validated safe subset
-                    answer = f"The result is {result}."
+                    result = _safe_math_eval(expr)
+                    if result is not None:
+                        answer = f"The result is {result}."
             except Exception:
                 pass  # Fall through to AI
 

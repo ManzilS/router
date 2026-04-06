@@ -133,11 +133,58 @@ Use the model name to target specific adapters:
 | **router** | Pre-middleware | Fan-out to multiple adapters | off |
 | **logger** | Post-middleware | Save conversations to SQLite | off |
 
+## Production Configuration
+
+All settings are configurable via environment variables (prefixed `ROUTER_`) or `.env` file. Copy `.env.example` to `.env` to get started.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ROUTER_DEV_MODE` | `false` | Enables `/docs`, verbose logging, error details in responses |
+| `ROUTER_API_KEY` | _(empty)_ | If set, requires `Bearer <key>` on `/v1/*` endpoints |
+| `ROUTER_RATE_LIMIT_RPM` | `0` | Requests per minute per IP (0 = disabled) |
+| `ROUTER_MAX_BODY_SIZE` | `10485760` | Max request body in bytes (10 MB) |
+| `ROUTER_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
+| `ROUTER_REQUEST_TIMEOUT` | `120.0` | Overall request timeout in seconds |
+
+### Endpoints
+
+| Path | Method | Description |
+|---|---|---|
+| `/` | GET | Basic status check |
+| `/health` | GET | Detailed health check (lists adapters) |
+| `/v1/models` | GET | List registered adapters as models |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat completions (streaming + non-streaming) |
+| `/docs` | GET | Swagger UI (dev mode only) |
+
+### Error Handling
+
+All errors return structured JSON:
+
+```json
+{
+  "error": {
+    "type": "adapter_timeout",
+    "message": "Upstream timed out",
+    "adapter": "openai"
+  }
+}
+```
+
+Error types: `validation_error`, `authentication_error`, `rate_limit_exceeded`, `request_too_large`, `adapter_error`, `adapter_timeout`, `adapter_auth_error`, `adapter_rate_limited`, `adapter_not_found`, `internal_error`.
+
+### Structured Logging
+
+- **Production**: JSON logs with `request_id`, `elapsed_ms`, structured fields
+- **Dev mode**: Human-readable `timestamp | LEVEL | logger | message` format
+- Every response includes an `X-Request-ID` header for tracing
+
 ## Testing
 
 ```bash
 uv run pytest tests/ -v
 ```
+
+98 tests covering: pipeline execution, adapter translation, middleware logic, error handling, auth, rate limiting, streaming, security (safe math eval), connection pooling, and integration.
 
 ## Docker
 
@@ -145,3 +192,5 @@ uv run pytest tests/ -v
 docker build -t ai-router .
 docker run -p 8080:8080 ai-router
 ```
+
+Production Dockerfile: multi-stage build, non-root user, health check included.

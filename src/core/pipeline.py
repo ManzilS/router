@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.core.state import PipelineState
+from src.utils.errors import AdapterError, AdapterNotFoundError, RouterError
 
 if TYPE_CHECKING:
     from src.adapters.base import AdapterBase
@@ -58,13 +59,22 @@ class Pipeline:
         adapter_name = state.request.target_adapter or self.default_adapter
         adapter = self.adapters.get(adapter_name)
         if adapter is None:
-            raise ValueError(
+            raise AdapterNotFoundError(
                 f"No adapter registered for '{adapter_name}'. "
-                f"Available: {list(self.adapters.keys())}"
+                f"Available: {list(self.adapters.keys())}",
+                adapter=adapter_name,
             )
 
         logger.debug("Dispatching to adapter: %s", adapter_name)
-        state.response = await adapter.send(state.request)
+        try:
+            state.response = await adapter.send(state.request)
+        except RouterError:
+            raise  # Already classified — propagate as-is
+        except Exception as exc:
+            raise AdapterError(
+                f"Adapter '{adapter_name}' failed: {exc}",
+                adapter=adapter_name,
+            ) from exc
         state.response.request_id = state.request.id
 
         # --- Post-processing middleware ---

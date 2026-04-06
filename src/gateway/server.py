@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import StreamingResponse
 
@@ -21,6 +21,11 @@ from src.core.models import (
     Usage,
 )
 from src.core.state import PipelineState
+from src.utils.errors import (
+    AdapterNotFoundError,
+    RequestValidationError,
+    RouterError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +37,19 @@ router = APIRouter()
 
 @router.get("/")
 async def root():
-    return {"status": "ok", "service": "ai-gateway-brain"}
+    return {"status": "ok", "service": "ai-router"}
+
+
+@router.get("/health")
+async def health(request: Request):
+    """Detailed health check for monitoring."""
+    orchestrator = request.app.state.orchestrator
+    adapters = list(orchestrator.pipeline.adapters.keys())
+    return {
+        "status": "healthy",
+        "adapters": adapters,
+        "default_adapter": orchestrator.pipeline.default_adapter,
+    }
 
 
 @router.get("/v1/models")
@@ -44,7 +61,7 @@ async def list_models(request: Request):
         {
             "id": name,
             "object": "model",
-            "owned_by": "ai-gateway-brain",
+            "owned_by": "ai-router",
         }
         for name in adapters
     ]
@@ -59,32 +76,43 @@ async def list_models(request: Request):
 async def chat_completions(request: Request):
     """OpenAI-compatible chat completions endpoint."""
     orchestrator = request.app.state.orchestrator
+    settings = request.app.state.settings
 
     try:
         body: dict[str, Any] = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise RequestValidationError("Invalid JSON body")
+
+    # Validate required fields
+    if "messages" not in body or not body["messages"]:
+        raise RequestValidationError("'messages' field is required and cannot be empty")
 
     # Convert incoming OpenAI-format request to our Universal Format
-    pipeline_req = _parse_openai_request(body)
+    try:
+        pipeline_req = _parse_openai_request(body)
+    except Exception as exc:
+        raise RequestValidationError(f"Failed to parse request: {exc}")
 
     # ----- STREAMING PATH -----
     if pipeline_req.stream:
-        return await _handle_streaming(pipeline_req, orchestrator)
+        return await _handle_streaming(pipeline_req, orchestrator, settings)
 
     # ----- NON-STREAMING PATH -----
     state = PipelineState(request=pipeline_req)
 
     try:
         state = await orchestrator.run(state)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except RouterError:
+        raise  # Already a structured error — let the handler deal with it
     except Exception:
         logger.exception("Pipeline execution failed")
-        raise HTTPException(status_code=502, detail="Upstream AI request failed")
+        raise RouterError(
+            "Upstream AI request failed",
+            details=("Check logs for traceback" if settings.dev_mode else ""),
+        )
 
     if state.response is None:
-        raise HTTPException(status_code=502, detail="No response from AI")
+        raise RouterError("No response from AI")
 
     return JSONResponse(content=_format_openai_response(state.response))
 
@@ -94,7 +122,7 @@ async def chat_completions(request: Request):
 # ---------------------------------------------------------------------------
 
 async def _handle_streaming(
-    pipeline_req: PipelineRequest, orchestrator
+    pipeline_req: PipelineRequest, orchestrator, settings
 ) -> StreamingResponse:
     """Run pre-middleware, then stream from the adapter, then run
     post-middleware asynchronously after the stream finishes."""
@@ -121,9 +149,9 @@ async def _handle_streaming(
     adapter_name = state.request.target_adapter or pipeline.default_adapter
     adapter = pipeline.adapters.get(adapter_name)
     if adapter is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No adapter registered for '{adapter_name}'",
+        raise AdapterNotFoundError(
+            f"No adapter registered for '{adapter_name}'",
+            adapter=adapter_name,
         )
 
     async def _stream_and_log():

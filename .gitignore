@@ -13,7 +13,7 @@ wheels/
 .env
 
 # Local storage
-.ai-gateway/
+.ai-router/
 
 # IDE
 .vscode/

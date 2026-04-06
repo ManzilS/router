@@ -20,6 +20,7 @@ from src.core.models import (
     Role,
     Usage,
 )
+from src.utils.errors import AdapterError, AdapterTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,24 @@ class OllamaAdapter(AdapterBase):
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30,
+                ),
+            )
+        return self._client
+
+    async def close(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     # ------------------------------------------------------------------
     def translate_to_ai(self, request: PipelineRequest) -> dict[str, Any]:
@@ -81,13 +100,27 @@ class OllamaAdapter(AdapterBase):
     async def send(self, request: PipelineRequest) -> PipelineResponse:
         payload = self.translate_to_ai(request)
         payload["stream"] = False
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client = self._get_client()
+
+        try:
             resp = await client.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
             )
             resp.raise_for_status()
             return self.translate_to_universal(resp.json())
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeoutError(
+                "Ollama timed out", adapter=self.name
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise AdapterError(
+                f"Cannot connect to Ollama at {self.base_url}", adapter=self.name
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise AdapterError(
+                f"Ollama returned {exc.response.status_code}", adapter=self.name
+            ) from exc
 
     # ------------------------------------------------------------------
     async def stream(self, request: PipelineRequest) -> AsyncIterator[str]:
@@ -100,8 +133,9 @@ class OllamaAdapter(AdapterBase):
         payload["stream"] = True
         chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
+        client = self._get_client()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
@@ -137,3 +171,11 @@ class OllamaAdapter(AdapterBase):
                     if done:
                         yield "data: [DONE]\n\n"
                         return
+        except httpx.TimeoutException as exc:
+            raise AdapterTimeoutError(
+                "Ollama timed out during streaming", adapter=self.name
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise AdapterError(
+                f"Cannot connect to Ollama at {self.base_url}", adapter=self.name
+            ) from exc
