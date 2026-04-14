@@ -55,6 +55,21 @@ adapters:
 middleware:
   # --- Pre-middleware (runs before the AI) ---
   pre:
+    # DLP Guard — blocks or redacts sensitive data before it leaves the machine
+    # Detects: API keys, private keys, credit cards, SSNs, passwords, tokens
+    # action: "block" (reject request) or "redact" (replace with [REDACTED])
+    # skip_local: true = skip scanning for local adapters (localhost)
+    - name: dlp_guard
+      enabled: true
+      module: src.middleware.dlp_guard
+      settings:
+        action: "block"
+        skip_local: true
+        # enable_optional: ["email", "ipv4"]
+        # extra_patterns:
+        #   - name: "Internal Project Code"
+        #     pattern: "PROJ-[0-9]{4,}"
+
     # Early Exit — answers trivial queries locally (time, date, math, ping)
     - name: early_exit
       enabled: false

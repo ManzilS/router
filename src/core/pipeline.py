@@ -39,6 +39,9 @@ class Pipeline:
         """Run the full pipeline once (one pass, no looping — the
         Orchestrator handles loops)."""
 
+        # Expose adapters so middleware (e.g. DLP guard) can inspect targets
+        state.extras.setdefault("_adapters", self.adapters)
+
         # --- Pre-processing middleware ---
         for mw in self.pre_middleware:
             logger.debug("Running pre-middleware: %s", mw.name)
