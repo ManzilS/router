@@ -123,7 +123,7 @@ class EarlyExitMiddleware(PreMiddleware):
             answer = f"Today is {today.strftime('%A, %B %d, %Y')}."
 
         elif _PING_PATTERNS.match(text):
-            answer = "Pong! The gateway is running."
+            answer = "Pong! The router is running."
 
         elif _MATH_PATTERN.match(text):
             expr = _MATH_PATTERN.match(text).group(1).strip()  # type: ignore[union-attr]

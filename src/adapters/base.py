@@ -8,6 +8,8 @@ This guarantees that the rest of the system only speaks the Universal Format.
 from __future__ import annotations
 
 import abc
+import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -40,7 +42,6 @@ class AdapterBase(abc.ABC):
         """
         resp = await self.send(request)
         # Fake a single SSE chunk from the non-streaming response
-        import json, time
         chunk = {
             "id": resp.id,
             "object": "chat.completion.chunk",

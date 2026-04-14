@@ -1,4 +1,4 @@
-"""Universal Internal Format — the lingua franca of the gateway.
+"""Universal Internal Format — the lingua franca of the router.
 
 Every incoming request is immediately converted into a ``PipelineRequest``
 and every outgoing response starts life as a ``PipelineResponse``.
@@ -60,8 +60,8 @@ class PipelineRequest(BaseModel):
     stream: bool = False
     stop: list[str] | None = None
 
-    # --- Gateway bookkeeping (not sent to the AI) ---
-    target_adapter: str = "openai"
+    # --- Router bookkeeping (not sent to the AI) ---
+    target_adapter: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
 

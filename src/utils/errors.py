@@ -1,6 +1,6 @@
 """Structured error types for the router.
 
-Every layer should raise these instead of raw exceptions so the gateway
+Every layer should raise these instead of raw exceptions so the router
 can return meaningful error responses to clients.
 """
 

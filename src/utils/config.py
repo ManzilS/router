@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
 
     # Request limits
-    request_timeout: float = 120.0  # seconds — overall gateway timeout
+    request_timeout: float = 120.0  # seconds — overall request timeout
     max_body_size: int = 10_485_760  # 10 MB
 
     # Authentication — if set, requires Bearer token

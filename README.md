@@ -36,7 +36,7 @@ Client (LMStudio, Chatbox, any OpenAI client)
     v
 +-------------------------------+
 |  Pre-Middleware Pipeline      |  (configurable, ordered)
-|  e.g. early_exit, router      |
+|  e.g. dlp_guard, early_exit   |
 +-------------------------------+
     |
     v
@@ -78,6 +78,9 @@ adapters:
 
 middleware:
   pre:
+    - name: dlp_guard
+      enabled: true
+      module: src.middleware.dlp_guard
     - name: early_exit
       enabled: false
       module: src.middleware.early_exit
@@ -129,9 +132,44 @@ Use the model name to target specific adapters:
 | **openai** | Adapter | Remote OpenAI API | off |
 | **ollama** | Adapter | Local Ollama | off |
 | **gemini** | Adapter | Google Gemini | off |
+| **dlp_guard** | Pre-middleware | Block/redact sensitive data before it leaves the machine | **ON** |
 | **early_exit** | Pre-middleware | Answer time/date/math locally | off |
 | **router** | Pre-middleware | Fan-out to multiple adapters | off |
 | **logger** | Post-middleware | Save conversations to SQLite | off |
+
+### DLP Guard (Data Loss Prevention)
+
+The DLP guard is **enabled by default** and runs before every request reaches an adapter. It scans user and system messages for sensitive data patterns:
+
+- **API keys**: AWS, GitHub, Slack, generic key/secret/token assignments
+- **Credentials**: Bearer tokens, password assignments
+- **Private keys**: RSA, EC, PGP, SSH (PEM format)
+- **PII**: Credit card numbers (Visa, MC, Amex, Discover), US Social Security Numbers
+- **Optional** (off by default): Email addresses, IPv4 addresses
+- **Custom**: Add your own regex patterns via `plugins.yaml`
+
+**Modes:**
+- `block` (default) — rejects the request with a 400 error
+- `redact` — replaces matches with `[REDACTED:Pattern Name]` and continues
+
+**Local adapter skip:** When `skip_local: true` (default), requests to localhost adapters (LMStudio, Ollama) bypass the scan since data never leaves the machine. Only remote adapters (OpenAI, Gemini) trigger scanning.
+
+Configure in `plugins.yaml`:
+
+```yaml
+middleware:
+  pre:
+    - name: dlp_guard
+      enabled: true
+      module: src.middleware.dlp_guard
+      settings:
+        action: "block"          # or "redact"
+        skip_local: true
+        # enable_optional: ["email", "ipv4"]
+        # extra_patterns:
+        #   - name: "Internal ID"
+        #     pattern: "PROJ-\\d{4,}"
+```
 
 ## Production Configuration
 
@@ -184,7 +222,7 @@ Error types: `validation_error`, `authentication_error`, `rate_limit_exceeded`, 
 uv run pytest tests/ -v
 ```
 
-98 tests covering: pipeline execution, adapter translation, middleware logic, error handling, auth, rate limiting, streaming, security (safe math eval), connection pooling, and integration.
+136 tests covering: pipeline execution, adapter translation, middleware logic, error handling, auth, rate limiting, streaming, security (safe math eval, DLP guard), connection pooling, and integration.
 
 ## Docker
 

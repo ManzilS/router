@@ -172,7 +172,7 @@ async def _handle_streaming(
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"content": f"\n\n[Gateway Error: {exc}]"},
+                        "delta": {"content": f"\n\n[Router Error: {exc}]"},
                         "finish_reason": "stop",
                     }
                 ],
