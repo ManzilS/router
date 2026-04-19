@@ -1,234 +1,121 @@
-# AI Router
+# router
 
-A modular AI routing engine. Drop-in adapters and middleware, declarative config via `plugins.yaml`, OpenAI-compatible API surface.
+**A modular AI routing engine. One OpenAI-compatible API in front of multiple LLM providers.**
 
-Built as a foundation — use it standalone as a router, or extend it for larger projects (RAG brain, response evaluator, agent orchestration, etc.).
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-green.svg)]()
+[![Status](https://img.shields.io/badge/status-active%20development-orange.svg)]()
 
-## Quick Start
+---
 
-```bash
-uv sync
-uv run python -m src.gateway.main
-```
+## What it does
 
-Server starts at `http://localhost:8080`. Point any OpenAI-compatible client to this URL.
+`router` sits between your application and any number of LLM providers — OpenAI, Gemini, Ollama, LMStudio — and exposes a **single OpenAI-compatible API surface**. Your app talks to `router` the same way it talks to OpenAI. `router` handles the rest: routing by model, auth, retries, request/response transforms, streaming, and fallback.
 
-LMStudio adapter is **on by default** (localhost:1234). Just have LMStudio running.
+It's drop-in (swap your `base_url` and go), extensible (adapters and middleware are Python classes with a simple contract), and config-driven (`plugins.yaml`).
+
+## Why
+
+Modern AI applications don't want to be married to one provider. You want to:
+- Route some requests to a local Ollama instance and others to GPT-4.
+- Try Gemini for vision without rewriting your pipeline.
+- Fall back to a secondary provider when a primary is down.
+- A/B test two models without touching application code.
+
+`router` exists so you can do all of that without forking your app for every provider.
 
 ## Architecture
 
 ```
-Client (LMStudio, Chatbox, any OpenAI client)
-    |
-    v
-+-------------------------------+
-|  Gateway (FastAPI)            |  localhost:8080/v1/chat/completions
-|  OpenAI-compatible API        |
-+-------------------------------+
-    |
-    v
-+-------------------------------+
-|  Plugin Registry              |  reads plugins.yaml
-|  Auto-discovers adapters      |
-|  and middleware at startup     |
-+-------------------------------+
-    |
-    v
-+-------------------------------+
-|  Pre-Middleware Pipeline      |  (configurable, ordered)
-|  e.g. dlp_guard, early_exit   |
-+-------------------------------+
-    |
-    v
-+-------------------------------+
-|  Adapter                      |  lmstudio | openai | ollama | gemini
-|  Translates Universal Format  |
-|  to/from AI-specific format   |
-+-------------------------------+
-    |
-    v
-+-------------------------------+
-|  Post-Middleware Pipeline     |  (configurable, ordered)
-|  e.g. logger                  |
-+-------------------------------+
-    |
-    v
-+-------------------------------+
-|  Orchestrator                 |  tool-call loops, fan-out
-+-------------------------------+
+┌────────────────┐
+│ your app /     │ ── OpenAI-compatible requests ──┐
+│ RAG pipeline   │                                  │
+└────────────────┘                                  ▼
+                                      ┌─────────────────────────┐
+                                      │         router          │
+                                      │                         │
+                                      │  [middleware chain]     │
+                                      │      ↓                  │
+                                      │  [model → adapter map]  │
+                                      │      ↓                  │
+                                      └───────┬──────────┬──────┘
+                                              │          │
+                                         ┌────▼───┐  ┌───▼────┐
+                                         │ OpenAI │  │ Ollama │  ...
+                                         └────────┘  └────────┘
 ```
 
-## plugins.yaml
+- **Adapters** normalize each provider's request/response shape (including streaming) to OpenAI's SSE format.
+- **Middleware** runs in a declared order — auth, logging, retry, model mapping, rate limiting, etc.
+- **plugins.yaml** wires everything together declaratively so adding a new provider or middleware is config, not code changes.
 
-All adapters and middleware are controlled declaratively:
-
-```yaml
-adapters:
-  lmstudio:
-    enabled: true
-    module: src.adapters.lmstudio_ext
-    settings:
-      base_url: "http://localhost:1234/v1"
-
-  openai:
-    enabled: false
-    module: src.adapters.openai_ext
-    settings:
-      api_key: "sk-..."
-
-middleware:
-  pre:
-    - name: dlp_guard
-      enabled: true
-      module: src.middleware.dlp_guard
-    - name: early_exit
-      enabled: false
-      module: src.middleware.early_exit
-  post:
-    - name: logger
-      enabled: false
-      module: src.middleware.logger
-```
-
-Enable a plugin by setting `enabled: true`. That's it.
-
-## Adapter Routing
-
-Use the model name to target specific adapters:
-
-| Model string | Adapter | Example |
-|---|---|---|
-| `qwen3-0.6b` | lmstudio (default) | Any LMStudio model |
-| `openai/gpt-4` | openai | Remote OpenAI API |
-| `ollama/llama3` | ollama | Local Ollama |
-| `gemini/gemini-2.0-flash` | gemini | Google Gemini |
-
-## Adding Your Own Adapter
-
-1. Copy `src/adapters/_template.py` to `src/adapters/myai_ext.py`
-2. Implement `translate_to_ai()`, `translate_to_universal()`, `send()`
-3. Add to `plugins.yaml`:
-   ```yaml
-   adapters:
-     myai:
-       enabled: true
-       module: src.adapters.myai_ext
-       settings:
-         api_key: "..."
-   ```
-
-## Adding Your Own Middleware
-
-1. Copy `src/middleware/_template.py` to `src/middleware/myfeature.py`
-2. Subclass `PreMiddleware` or `PostMiddleware`
-3. Implement `process()`
-4. Add to `plugins.yaml` under `pre:` or `post:`
-
-## Included Example Plugins
-
-| Plugin | Type | Description | Default |
-|---|---|---|---|
-| **lmstudio** | Adapter | Local LMStudio (OpenAI-compatible) | ON |
-| **openai** | Adapter | Remote OpenAI API | off |
-| **ollama** | Adapter | Local Ollama | off |
-| **gemini** | Adapter | Google Gemini | off |
-| **dlp_guard** | Pre-middleware | Block/redact sensitive data before it leaves the machine | **ON** |
-| **early_exit** | Pre-middleware | Answer time/date/math locally | off |
-| **router** | Pre-middleware | Fan-out to multiple adapters | off |
-| **logger** | Post-middleware | Save conversations to SQLite | off |
-
-### DLP Guard (Data Loss Prevention)
-
-The DLP guard is **enabled by default** and runs before every request reaches an adapter. It scans user and system messages for sensitive data patterns:
-
-- **API keys**: AWS, GitHub, Slack, generic key/secret/token assignments
-- **Credentials**: Bearer tokens, password assignments
-- **Private keys**: RSA, EC, PGP, SSH (PEM format)
-- **PII**: Credit card numbers (Visa, MC, Amex, Discover), US Social Security Numbers
-- **Optional** (off by default): Email addresses, IPv4 addresses
-- **Custom**: Add your own regex patterns via `plugins.yaml`
-
-**Modes:**
-- `block` (default) — rejects the request with a 400 error
-- `redact` — replaces matches with `[REDACTED:Pattern Name]` and continues
-
-**Local adapter skip:** When `skip_local: true` (default), requests to localhost adapters (LMStudio, Ollama) bypass the scan since data never leaves the machine. Only remote adapters (OpenAI, Gemini) trigger scanning.
-
-Configure in `plugins.yaml`:
-
-```yaml
-middleware:
-  pre:
-    - name: dlp_guard
-      enabled: true
-      module: src.middleware.dlp_guard
-      settings:
-        action: "block"          # or "redact"
-        skip_local: true
-        # enable_optional: ["email", "ipv4"]
-        # extra_patterns:
-        #   - name: "Internal ID"
-        #     pattern: "PROJ-\\d{4,}"
-```
-
-## Production Configuration
-
-All settings are configurable via environment variables (prefixed `ROUTER_`) or `.env` file. Copy `.env.example` to `.env` to get started.
-
-| Variable | Default | Description |
-|---|---|---|
-| `ROUTER_DEV_MODE` | `false` | Enables `/docs`, verbose logging, error details in responses |
-| `ROUTER_API_KEY` | _(empty)_ | If set, requires `Bearer <key>` on `/v1/*` endpoints |
-| `ROUTER_RATE_LIMIT_RPM` | `0` | Requests per minute per IP (0 = disabled) |
-| `ROUTER_MAX_BODY_SIZE` | `10485760` | Max request body in bytes (10 MB) |
-| `ROUTER_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
-| `ROUTER_REQUEST_TIMEOUT` | `120.0` | Overall request timeout in seconds |
-
-### Endpoints
-
-| Path | Method | Description |
-|---|---|---|
-| `/` | GET | Basic status check |
-| `/health` | GET | Detailed health check (lists adapters) |
-| `/v1/models` | GET | List registered adapters as models |
-| `/v1/chat/completions` | POST | OpenAI-compatible chat completions (streaming + non-streaming) |
-| `/docs` | GET | Swagger UI (dev mode only) |
-
-### Error Handling
-
-All errors return structured JSON:
-
-```json
-{
-  "error": {
-    "type": "adapter_timeout",
-    "message": "Upstream timed out",
-    "adapter": "openai"
-  }
-}
-```
-
-Error types: `validation_error`, `authentication_error`, `rate_limit_exceeded`, `request_too_large`, `adapter_error`, `adapter_timeout`, `adapter_auth_error`, `adapter_rate_limited`, `adapter_not_found`, `internal_error`.
-
-### Structured Logging
-
-- **Production**: JSON logs with `request_id`, `elapsed_ms`, structured fields
-- **Dev mode**: Human-readable `timestamp | LEVEL | logger | message` format
-- Every response includes an `X-Request-ID` header for tracing
-
-## Testing
+## Quickstart
 
 ```bash
-uv run pytest tests/ -v
+git clone https://github.com/ManzilS/router
+cd router
+pip install -r requirements.txt
+cp plugins.example.yaml plugins.yaml   # edit to add your providers
+python -m router
 ```
 
-136 tests covering: pipeline execution, adapter translation, middleware logic, error handling, auth, rate limiting, streaming, security (safe math eval, DLP guard), connection pooling, and integration.
+Point your app at `http://localhost:8080/v1` instead of `https://api.openai.com/v1`:
 
-## Docker
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="any")
 
-```bash
-docker build -t ai-router .
-docker run -p 8080:8080 ai-router
+r = client.chat.completions.create(
+    model="gpt-4o-mini",        # or "llama3" to route to local Ollama
+    messages=[{"role":"user","content":"hello"}]
+)
 ```
 
-Production Dockerfile: multi-stage build, non-root user, health check included.
+## Example `plugins.yaml`
+
+```yaml
+providers:
+  - name: openai
+    adapter: openai
+    api_key_env: OPENAI_API_KEY
+
+  - name: ollama-local
+    adapter: ollama
+    base_url: http://localhost:11434
+
+middleware:
+  - name: log_requests
+  - name: retry
+    config: { max_attempts: 3 }
+  - name: model_router
+    routes:
+      "gpt-*":  openai
+      "llama*": ollama-local
+```
+
+## What's implemented today
+
+- [x] OpenAI adapter (chat, streaming)
+- [x] Ollama adapter
+- [x] Gemini adapter
+- [x] LMStudio adapter
+- [x] Middleware chain (request and response phases)
+- [x] Model → provider routing via plugins.yaml
+- [ ] Per-provider rate limiting
+- [ ] Metrics endpoint (Prometheus)
+- [ ] Cost tracking per model
+
+## Roadmap
+
+- Tool-call normalization across providers
+- Embedding endpoint parity (`/v1/embeddings`)
+- Built-in cache middleware (semantic + exact)
+- First-class Anthropic adapter
+
+## License
+
+MIT
+
+## About
+
+Built by [Manzil "Nick" Sapkota](https://github.com/ManzilS) — open to AI/ML Engineer roles. [Resume](mailto:manzilsapkota@gmail.com) · [LinkedIn](https://www.linkedin.com/in/manzilsapkota/).
